@@ -1,0 +1,454 @@
+---
+output:
+  html_document:
+    code_folding: show
+    highlight: haddock
+    theme: lumen
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+  word_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.height=4, fig.width=6, warning = F)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(randomForest, tree, ISLR, rpart, rattle, pROC, partykit, ggplot2, glmnet, leaps, dplyr, tm, jsonlite,SnowballC, car, RColorBrewer, wordcloud2, wordcloud)
+
+```
+
+
+
+# Problem 1: IQ and successes
+
+## Background: Measurement of Intelligence 
+
+Case Study:  how intelligence relates to one's future successes?
+
+**Data needed: `IQ.Full.csv`**
+
+ASVAB (Armed Services Vocational Aptitude Battery) tests have been used as a screening test for those who want to join the army or other jobs. 
+
+Our data set IQ.csv is a subset of individuals from the 1979 National Longitudinal Study of 
+Youth (NLSY79) survey who were re-interviewed in 2006. Information about family, personal demographic such as gender, race and education level, plus a set of ASVAB (Armed Services Vocational Aptitude Battery) test scores are available. It is STILL used as a screening test for those who want to join the army! ASVAB scores were 1981 and income was 2005. 
+
+**Our goals:** 
+
++ Is IQ related to one's successes measured by Income?
++ Is there evidence to show that Females are under-paid?
++ What are the best possible prediction models to predict future income? 
+
+
+**The ASVAB has the following components:**
+
++ Science, Arith (Arithmetic reasoning), Word (Word knowledge), Parag (Paragraph comprehension), Numer (Numerical operation), Coding (Coding speed), Auto (Automative and Shop information), Math (Math knowledge), Mechanic (Mechanic Comprehension) and Elec (Electronic information).
++ AFQT (Armed Forces Qualifying Test) is a combination of Word, Parag, Math and Arith.
++ Note: Service Branch requirement: Army 31, Navy 35, Marines 31, Air Force 36, and Coast Guard 45,(out of 100 which is the max!) 
+
+**The detailed variable definitions:**
+
+Personal Demographic Variables: 
+
+ * Race: 1 = Hispanic, 2 = Black, 3 = Not Hispanic or Black
+ * Gender: a factor with levels "female" and "male"
+ * Educ: years of education completed by 2006
+ 
+Household Environment: 
+ 
+* Imagazine: a variable taking on the value 1 if anyone in the respondent’s household regularly read
+	magazines in 1979, otherwise 0
+* Inewspaper: a variable taking on the value 1 if anyone in the respondent’s household regularly read
+	newspapers in 1979, otherwise 0
+* Ilibrary: a variable taking on the value 1 if anyone in the respondent’s household had a library card
+	in 1979, otherwise 0
+* MotherEd: mother’s years of education
+* FatherEd: father’s years of education
+
+Variables Related to ASVAB test Scores in 1981 (Proxy of IQ's)
+
+* AFQT: percentile score on the AFQT intelligence test in 1981 
+* Coding: score on the Coding Speed test in 1981
+* Auto: score on the Automotive and Shop test in 1981
+* Mechanic: score on the Mechanic test in 1981
+* Elec: score on the Electronics Information test in 1981
+
+* Science: score on the General Science test in 1981
+* Math: score on the Math test in 1981
+* Arith: score on the Arithmetic Reasoning test in 1981
+* Word: score on the Word Knowledge Test in 1981
+* Parag: score on the Paragraph Comprehension test in 1981
+* Numer: score on the Numerical Operations test in 1981
+
+Variable Related to Life Success in 2006
+
+* Income2005: total annual income from wages and salary in 2005. We will use a natural log transformation over the income.
+
+The following 10 questions are answered as 1: strongly agree, 2: agree, 3: disagree, 4: strongly disagree
+
+* Esteem 1: “I am a person of worth”
+* Esteem 2: “I have a number of good qualities”
+* Esteem 3: “I am inclined to feel like a failure”
+* Esteem 4: “I do things as well as others”
+* Esteem 5: “I do not have much to be proud of”
+* Esteem 6: “I take a positive attitude towards myself and others”
+* Esteem 7: “I am satisfied with myself”
+* Esteem 8: “I wish I could have more respect for myself”
+* Esteem 9: “I feel useless at times”
+* Esteem 10: “I think I am no good at all”
+
+
+## 1. EDA: Some cleaning work is needed to organize the data. 
+
+```{r}
+data1 <- read.csv("IQ.Full.csv", header=T)
+```
+
+\newline
++ The first variable is the label for each person. Take that out.
+
+```{r}
+data1 <- data1 %>% select(-Subject)
+```
++ Set categorical variables as factors. 
+```{r, results==FALSE}
+str(data1)
+```
+
+```{r}
+data1 <- data1 %>% mutate(Imagazine = as.factor(Imagazine), Inewspaper = as.factor(Inewspaper), Ilibrary = as.factor(Ilibrary), Race = as.factor(Race), Esteem1 = as.factor(Esteem1), Esteem2 = as.factor(Esteem2), Esteem3 = as.factor(Esteem3), Esteem4 = as.factor(Esteem4), Esteem5 = as.factor(Esteem5), Esteem6 = as.factor(Esteem6), Esteem7 = as.factor(Esteem7), Esteem8 = as.factor(Esteem8), Esteem9 = as.factor(Esteem9), Esteem10 = as.factor(Esteem10))
+```
+
+\newline
+
++ Make log transformation for Income and take the original Income out
+```{r}
+data1 <- data1 %>% 
+  mutate(logIncome2005 = log(Income2005)) %>% 
+  select(-Income2005)
+```
+
+\newline
+
++ Take the last person out of the dataset and label it as **Michelle**. 
+```{r}
+Michelle <- data1[dim(data1)[1],]
+data1 <- data1[-dim(data1)[1],]
+```
+
+\newline
+
++ When needed, split data to three portions: training, testing and validation (70%/20%/10%)
+  - training data: get a fit
+  - testing data: find the best tuning parameters/best models
+  - validation data: only used in your final model to report the accuracy. 
+  
+```{r}
+set.seed(123)
+N <- dim(data1)[1]
+train <- round(N*0.7,0)
+test <- round(N*0.2,0)
+index.train <- sample(N, train) # Take a random sample of train from 1 to N
+data.train <- data1[index.train,]
+index.test <- sample(N-train, test) # Take a random sample of test from 1 to N-train
+data.test <- data1[-index.train,][index.test,]
+data.validate <- data1[-index.train,][-index.test,]
+```
+
+## 2. Factors affect Income
+
+We only use linear models to answer the questions below.
+
+i. Is there any evidence showing ASVAB test scores might affect the Income. Show your work here. 
+
+
+```{r}
+fit1.asvab <- lm(logIncome2005~AFQT+Arith+Word+Parag+Numer+Coding+Auto+Math+Mechanic+Elec+Science, data1)
+summary(fit1.asvab)
+```
+
+\newline
+
+**Yes, ASVAB scores do affect income. Not all scores are significant and the magnitude and signs differ across scores. However, some scores like Numerical Operations, Auto, Math etc. clearly significantly impact income in a positive way. 
+
+\newline
+
+ii. Is there any evidence to show that there is gender bias against either male or female in terms of income. Once again show your work here. 
+
+```{r}
+fit2.gender <- lm(logIncome2005~Gender, data1)
+summary(fit2.gender)
+fit2.gender.all <- lm(logIncome2005~., data1)
+summary(fit2.gender.all)
+Anova(fit2.gender.all)
+```
+
+\newline
+
+**Yes, there is a gender bias with males earning a higher income. Gender is a significant variable at 0.001 level of significance. When we run a linear regression of logIncome vs Gender, we see that males on average earn a higher income. We also see that Gender is a significant variable controlling for other variables when we regress logIncome on all variables.**
+
+\newline
+
+We next build a few models for the purpose of prediction using all the information available. From now on you may use the three data sets setting (training/testing/validation) when it is appropriate. 
+
+## 3. Trees
+
+i. fit1: tree(Income ~ Educ + Gender, data.train) with default set up 
+
+    a) Display the tree
+    ```{r, results=T}
+fit1 <- tree(logIncome2005~ Educ + Gender, data.train)
+plot(fit1)
+text(fit1)
+```
+    b) How many end nodes? Briefly explain how the estimation is obtained in each end nodes
+    and describe the prediction equation
+    
+    ```{r, results=T}
+fit1.treesize <- summary(fit1)$size
+fit1.treesize
+```
+
+**There are 4 terminal nodes.The estimation is the mean of the responses fulfilling the conditions at the node.In this case: 9.959 is the mean log(Income) of Females with <15.5 years of education in the training dataset **
+
+The prediction equation is as follows (as a nested if-else statement):  
+IFELSE(GENDER=FEMALE,  
+       IFELSE(EDUC<15.5,9.959,10.520),  
+       IFELSE(EDUC<15.5,10.570,11.160))  
+
+\newline
+    
+    c) Does it show interaction effect of Gender and Educ over Income?
+
+**Yes, there seems to be an interaction effect. LogIncome is higher for males vs females with the same education level. Thus Gender seems to have an interaction with education because of which males have higher income compared to females with the same education levels.**
+    
+    d) Predict Michelle's income
+    
+```{r}
+fit1.y <- predict(fit1, Michelle)
+```
+
+**Michelle's income is predicted to be `r fit1.y`.**
+
+\newline
+
+i. fit2: fit2 <- rpart(Income2005 ~., data.train, minsplit=20, cp=.009)
+
+    a) Display the tree using plot(as.party(fit2), main="Final Tree with Rpart") 
+    
+    ```{r, results=T}
+fit2 <- rpart(logIncome2005 ~., data.train, minsplit=20, cp=.009)
+plot(as.party(fit2), main = "Final Tree with Rpart")
+```
+
+    b) A brief summary of the fit2
+    
+```{r, results=T}
+summary(fit2)
+```   
+
+\newline
+
+**`fit2` first uses `Gender` to separate candidates.**  
+**For Females, it next uses `Educ` to distinguish candidates, with `AFQT` used at the lower levels to further separate out candidates.**  
+**For Males, it next uses `Arith` to distinguish candidates, with `Educ` used at the lower levels to further separate out candidates.**
+
+\newline
+
+    c) Compare testing errors between fit1 and fit2. Is the training error from fit2 always less than that from fit1? Is the testing error from fit2 always smaller than that from fit1? 
+    
+
+```{r, echo=F, results=F}
+# Training errors
+fit1.sum <- summary(fit1)
+fit1.traine <- fit1.sum$dev/train # sum(fit1.s$residuals^2)
+fit2.traine <- sum(residuals(fit2)^2)/train
+fit1.teste <- mean((data.test$logIncome2005-predict(fit1, data.test))^2)
+fit2.teste <- mean((data.test$logIncome2005-predict(fit2, data.test))^2)
+```
+
+\newline
+
+**Here, fit2 (`r fit2.traine`) has a lower training error than fit1 (`r fit1.traine`). This should  always be true, as fit2 can use more parameters to minimize RSS. However, it could change with different stopping rules (e.g. higher mCp or minsplit size). Here,  fit2 (`r fit2.teste`) has a lower testing error than fit1 (`r fit1.teste`). This need not always be true, as fit2 could overfit the training data and have high variance resulting in higher testing error.**
+
+\newline
+
+    d) You may prune the fit2 to get a tree with small testing error. 
+    
+```{r, results=T}
+plotcp(fit2)
+fit2.prune <- prune(fit2, cp = fit2$cptable[which.min(fit2$cptable[,"xerror"]),"CP"])
+plot(fit2.prune)
+text(fit2.prune, pretty = 0)
+fit2.prune.testfitted <- predict(fit2.prune, data.test)
+fit2.prune.teste <- mean((data.test$logIncome2005-fit2.prune.testfitted)^2)
+```
+    
+****Referring to the chart above, we selected the cp that gave the minimum error (x-val relative error)**  
+**After attempting to prune the tree, we settled on the tree shown below. This tree had 6 terminal nodes.**  
+**As seen below, This tree reduced overfitting based on our testing data.**  
+**Pruned tree testing error: `r fit2.prune.teste`**  
+
+    
+i. fit3: bag two trees
+
+    a) Take 2 bootstrap training samples and build two trees using the rpart(Income2005 ~., data.train.b, minsplit=20, cp=.009). Display both trees.
+   
+```{r, results=T}
+set.seed(123)
+index.a <- sample(train, train, replace = T)
+data.traina <- data.train[index.a, ]
+index.b <- sample(train, train, replace = T)
+data.trainb <- data.train[index.b, ]
+fit3a <- rpart(logIncome2005 ~., data.traina, minsplit=20, cp=.009)
+fit3b <- rpart(logIncome2005 ~., data.trainb, minsplit=20, cp=.009)
+plot(fit3a)
+text(fit3a, pretty = 0)
+plot(fit3b)
+text(fit3b, pretty = 0)
+``` 
+    
+\newline    
+    
+    b) Explain how to get fitted values for Michelle by bagging the two trees obtained above. Do not use the predict(). 
+    
+    
+**Trace path down tree to leaves using Michelle's data.**   
+**From Tree A: Gender = Female, Math = 10, Numer = 24, Esteem7 = 2 --> Prediction of 9.483**    
+**From Tree B: Math =10, Gender = Female, AFQT = 31.207 --> Prediction of 9.956**  
+**We then perform bagging by averaging the predictions of the two trees ((9.483+9.956)/2).** 
+
+\newline
+
+    c) What is the testing error for the bagged tree. Is it guaranteed that the testing error by bagging the two tree always smaller that either single tree? 
+    
+```{r}
+fit3.teste <- mean((data.test$logIncome2005
+                    -(predict(fit3a, data.test)+predict(fit3b, data.test))/2)^2)
+
+```
+
+\newline
+
+**The testing error is `r fit3.teste`. And, it is not guaranteed that the testing error is smaller. For instance, the testing data may be very similar to the training data.**    
+ 
+\newline
+
+i. fit4: Build a best possible RandomForest
+
+    a) Show the process how you tune mtry and number of trees. Give a very high level explanation how fit4 is built.
+    
+\newline
+    
+**We first tune ntree**
+```{r}
+fit.rf <- randomForest(logIncome2005~., data.train, mtry=5, ntree=500)
+plot(fit.rf, col="red", pch=16, type="p", main="default plot")
+```
+
+**We seem to need at least 300 trees to settle the OOB testing errors.**   
+   
+**We then tune mtry with ntree = 300**
+
+```{r, eval = F}
+set.seed(1)
+rf.errorp <- 1:30  # set up a vector of length p ( number of parameters)
+for (p in 1:30)  # repeat the following code inside { } p times
+{
+  fit.rf <- randomForest(logIncome2005~., data.train, mtry=p, ntree=300)
+  rf.errorp[p] <- fit.rf$mse[300]  # collecting oob mse based on 300 trees
+}
+# rf.error.p   # oob mse returned: should be a vector of p
+
+plot(1:30, rf.errorp, pch=16,
+     xlab="mtry",
+     ylab="OOB mse of mtry")
+lines(1:30, rf.errorp)
+```
+
+\newline
+
+**Based on the above plot, we decide to set mtry = 8, which is slightly lesser than 1/3 the number of parameters.**  
+
+```{r}
+fit4 <- randomForest(logIncome2005~., data.train, mtry=8, ntree=300)
+plot(fit4)
+```
+
+\newline  
+    
+    b) Compare the oob errors form fit4 to the testing errors using your testing data. Are you convinced that oob errors estimate testing error reasonably well.
+    
+```{r, results=T}
+fit4.test <- randomForest(logIncome2005~., data.train, xtest=data.test[, -31],
+                            ytest=data.test[,31], mtry=8, ntree=300)
+plot(1:300, fit4.test$mse, col="red", pch=16,
+     xlab="number of trees",
+     ylab="mse",
+     main="blue = mse's of RF=oob errors, red=testing errors")
+points(1:300, fit4$mse, col="blue", pch=16)
+```
+
+**Based on the above plot, it seems that the OOB errors estimate the testing errors reasonably well.** 
+
+```{r}
+fit4.teste <- tail(fit4.test$mse,1)
+```
+   
+\newline
+
+    c) What is the predicted value for Michelle?
+    
+```{r}
+fit4.michelle <- predict(fit4, Michelle)
+```
+
+
+**The predicted value for Michelle is `r fit4.michelle`. This translates to an income of `r exp(fit4.michelle)` in 2005.** 
+
+\newline
+
+    
+i. Now you have built so many predicted models (fit1 through fit4 in this section). What about build a fit5 which bags fit1 through fit4. Does fit5 have the smallest testing error?
+
+```{r}
+fit1.fitted <- predict(fit1, data.test)
+fit2.fitted <- predict(fit2, data.test)
+fit3.fitted <- (predict(fit3a, data.test)+predict(fit3b, data.test))/2
+fit4.fitted <- predict(fit4, data.test)
+fit5.fitted <- (fit1.fitted+fit2.fitted+fit3.fitted+fit4.fitted)/4
+fit5.teste <- mean((data.test$logIncome2005-fit5.fitted)^2)
+data.frame(fit1 = fit1.teste, fit2 = fit2.teste, fit3 = fit3.teste, fit4 = fit4.teste, fit5 = fit5.teste)
+```
+
+\newline  
+
+**No, fit4 (RF) has the smallest testing error (`r fit4.teste`).**
+
+\newline
+
+ii.  Summarize the results and nail down one best possible final model you will recommend to predict income. Explain briefly why this is the best choice. Finally for the first time evaluate the prediction error using the validating data set.
+
+```{r}
+fit1.validate <- predict(fit1, data.validate)
+fit2.validate <- predict(fit2, data.validate)
+fit3.validate <- (predict(fit3a, data.validate)+predict(fit3b, data.validate))/2
+fit4.validate <- predict(fit4, data.validate)
+fit5.validate <- (fit1.validate+fit2.validate+fit3.validate+fit4.validate)/4
+fit1.validate.e <- mean((data.validate$logIncome2005-fit1.validate)^2)
+fit2.validate.e <- mean((data.validate$logIncome2005-fit2.validate)^2)
+fit3.validate.e <- mean((data.validate$logIncome2005-fit3.validate)^2)
+fit4.validate.e <- mean((data.validate$logIncome2005-fit4.validate)^2)
+fit5.validate.e <- mean((data.validate$logIncome2005-fit5.validate)^2)
+data.frame(fit1 = fit1.validate.e, fit2 = fit2.validate.e, fit3 = fit3.validate.e, fit4 = fit4.validate.e, fit5 = fit5.validate.e)
+```
+
+\newline   
+
+**Based on testing errors for the validation datasets, we use fit4 as it has the lowest prediction error (`r fit4.validate.e`) for the validation data set.**
+
+    
